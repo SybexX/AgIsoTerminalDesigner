@@ -1,0 +1,61 @@
+name: PR Preview Deploy
+
+# Using pull_request_target to support PRs from forks
+# Security: We only build the web app (no secrets exposed, no arbitrary code execution)
+on:
+  pull_request_target:
+    types:
+      - opened
+      - reopened
+      - synchronize
+      - closed
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  deploy-preview:
+    runs-on: ubuntu-latest
+    steps:
+      # Checkout the PR head (the code from the fork/branch)
+      # This is safe because we're only building a WASM app with no secrets
+      - uses: actions/checkout@v4
+        if: github.event.action != 'closed'
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      # For closed PRs, checkout base branch (for cleanup)
+      - uses: actions/checkout@v4
+        if: github.event.action == 'closed'
+
+      - name: Setup Rust
+        if: github.event.action != 'closed'
+        uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: stable
+          target: wasm32-unknown-unknown
+          override: true
+
+      - name: Cache
+        if: github.event.action != 'closed'
+        uses: Swatinem/rust-cache@v2
+
+      - name: Download and install Trunk binary
+        if: github.event.action != 'closed'
+        run: wget -qO- https://github.com/thedodd/trunk/releases/latest/download/trunk-x86_64-unknown-linux-gnu.tar.gz | tar -xzf-
+
+      - name: Build
+        if: github.event.action != 'closed'
+        run: ./trunk build --release --public-url $public_url
+        env:
+          public_url: "https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/pr-preview/pr-${{ github.event.number }}"
+
+      - name: Deploy PR Preview
+        uses: rossjrw/pr-preview-action@v1
+        with:
+          source-dir: dist
+          preview-branch: gh-pages
+          umbrella-dir: pr-preview
+          action: auto
