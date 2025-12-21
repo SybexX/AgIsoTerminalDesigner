@@ -35,6 +35,9 @@ pub struct EditorProject {
 
     /// Cached default object names for efficient lookup
     default_object_names: RefCell<HashMap<ObjectId, String>>,
+
+    /// Request to open image file dialog for PictureGraphic object
+    image_load_request: RefCell<Option<ObjectId>>,
 }
 
 impl From<ObjectPool> for EditorProject {
@@ -64,6 +67,7 @@ impl From<ObjectPool> for EditorProject {
             renaming_object: RefCell::new(None),
             next_available_id: RefCell::new(max_id.saturating_add(1)),
             default_object_names: RefCell::new(HashMap::new()),
+            image_load_request: RefCell::new(None),
         }
     }
 }
@@ -430,6 +434,7 @@ impl EditorProject {
         // Restore object metadata
         let metadata = project.get_metadata();
         let mut object_info = editor_project.object_info.borrow_mut();
+        let mut_pool = editor_project.get_mut_pool();
         for object in editor_project.pool.objects() {
             if let Some(meta) = metadata.get(&object.id().value()) {
                 let info = object_info
@@ -458,5 +463,15 @@ impl EditorProject {
         }
 
         Ok(editor_project)
+    }
+
+    /// Request to open image file dialog for a PictureGraphic object
+    pub fn request_image_load(&self, object_id: ObjectId) {
+        self.image_load_request.replace(Some(object_id));
+    }
+
+    /// Take and clear the image load request if any
+    pub fn take_image_load_request(&self) -> Option<ObjectId> {
+        self.image_load_request.replace(None)
     }
 }

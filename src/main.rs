@@ -4,7 +4,7 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")] // hide console window on Windows in release
 use ag_iso_stack::object_pool::object::*;
-use ag_iso_stack::object_pool::object_attributes::Point;
+use ag_iso_stack::object_pool::object_attributes::{DataCodeType, PictureGraphicFormat, Point};
 use ag_iso_stack::object_pool::NullableObjectId;
 use ag_iso_stack::object_pool::ObjectId;
 use ag_iso_stack::object_pool::ObjectPool;
@@ -120,10 +120,23 @@ impl DesignerApp {
 impl DesignerApp {
     /// Open a file dialog
     fn open_file_dialog(&mut self, reason: FileDialogReason, ctx: &egui::Context) {
+        let is_image_loading = matches!(reason, FileDialogReason::OpenImagePictureGraphics(_));
         self.file_dialog_reason = Some(reason);
 
         let sender = self.file_channel.0.clone();
-        let task = rfd::AsyncFileDialog::new().pick_file();
+        let mut dialog = rfd::AsyncFileDialog::new();
+
+        // Add image file filters for image loading
+        if is_image_loading {
+            dialog = dialog.add_filter(
+                "Image Files",
+                &[
+                    "png", "jpg", "jpeg", "bmp", "gif", "ico", "tiff", "tif", "webp",
+                ],
+            );
+        }
+
+        let task = dialog.pick_file();
         let ctx = ctx.clone();
         execute(async move {
             let file = task.await;
@@ -163,7 +176,51 @@ impl DesignerApp {
                         if let Some(obj) = pool.get_mut_pool().borrow_mut().object_mut_by_id(id) {
                             match obj {
                                 Object::PictureGraphic(o) => {
-                                    // o.load_image(content);
+                                    if let Ok(img) = image::load_from_memory(&content) {
+                                        // Update image dimensions
+                                        if img.width() > u16::MAX as u32
+                                            || img.height() > u16::MAX as u32
+                                        {
+                                            log::error!(
+                                                "Image dimensions exceed maximum size of {}x{}",
+                                                u16::MAX,
+                                                u16::MAX
+                                            );
+                                            return;
+                                        }
+                                        o.actual_width = img.width() as u16;
+                                        o.actual_height = img.height() as u16;
+                                        if o.width == 0 {
+                                            // default to actual size if not set
+                                            o.width = o.actual_width;
+                                        }
+
+                                        // Set format to 8-bit for maximum color support
+                                        o.format = PictureGraphicFormat::EightBit;
+                                        o.options.data_code_type = DataCodeType::Raw;
+
+                                        // We set transparent color to 1 (arbitrary choice) as we
+                                        // only use index 15..255 for actual colors
+                                        o.transparency_colour = 1;
+                                        o.options.transparent = true;
+
+                                        // Convert RGB pixels to color indices
+                                        o.data = img
+                                            .to_rgba8()
+                                            .pixels()
+                                            .map(|pixel| {
+                                                if pixel[3] == 0 {
+                                                    // Transparent pixel
+                                                    return o.transparency_colour;
+                                                }
+                                                find_closest_color_index(
+                                                    pixel[0], pixel[1], pixel[2],
+                                                )
+                                            })
+                                            .collect();
+                                    } else {
+                                        log::error!("Failed to decode image");
+                                    }
                                 }
                                 _ => (),
                             }
@@ -344,6 +401,13 @@ impl eframe::App for DesignerApp {
 
         // Handle file dialog
         self.handle_file_loaded();
+
+        // Check for image load requests
+        if let Some(pool) = &self.project {
+            if let Some(object_id) = pool.take_image_load_request() {
+                self.open_file_dialog(FileDialogReason::OpenImagePictureGraphics(object_id), ctx);
+            }
+        }
 
         if self.show_development_popup {
             egui::Window::new("🚧 Under Active Development")
@@ -833,6 +897,20 @@ fn main() {
             }
         }
     });
+}
+
+/// Find the closest color index in the palette for a given RGB value
+fn find_closest_color_index(r: u8, g: u8, b: u8) -> u8 {
+    fn quantize_channel(c: u8) -> u8 {
+        // ((c + 25) / 51) in integer math, capped to 0..5
+        let v = (c as u16 + 25) / 51;
+        v.min(5) as u8
+    }
+    let rq = quantize_channel(r);
+    let gq = quantize_channel(g);
+    let bq = quantize_channel(b);
+
+    16 + 36 * rq + 6 * gq + bq
 }
 
 #[cfg(not(target_arch = "wasm32"))]
